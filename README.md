@@ -25,7 +25,7 @@ has no account and doesn't copy your files: it keeps track of them where they al
 
 <p align="center"><img src="docs/drop.png" width="400" alt="A shelf glowing while a file is held over it"></p>
 
-The shelf glows while you hold a file over it, so you know the drop will land.
+The shelf lights up in your accent color while you hold a file over it, so you know the drop will land.
 
 ## Settings
 
@@ -38,7 +38,7 @@ On a Mac without a notch, the shelf opens from the top center of the screen inst
 
 ## Install
 
-Ledge needs macOS 14 or later on Apple silicon. There's no prebuilt download yet, so build it
+Ledge needs macOS 26 Tahoe or later on Apple silicon. There's no prebuilt download yet, so build it
 from source (it takes under a minute):
 
 ```sh

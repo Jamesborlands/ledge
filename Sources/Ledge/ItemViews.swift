@@ -2,21 +2,34 @@ import AppKit
 import SwiftUI
 
 /// One file on the shelf: thumbnail + name. AppKit so dragging out behaves exactly like Finder.
+/// Selection looks like Finder's icon view on Tahoe: a soft plate behind the thumbnail and an
+/// accent pill behind the name (gray when the shelf isn't key).
 final class ItemTileView: NSView, NSDraggingSource {
     weak var controller: ShelfController?
     private(set) var item: ShelfItem?
 
+    private let plate = NSView()
     private let imageView = NSImageView()
-    private let label = NSTextField(labelWithString: "")
+    private let labelPill = NSView()
+    private let label = NSTextField(wrappingLabelWithString: "")
     private var mouseDownEvent: NSEvent?
     private var loadedPath: String?
+    private var selected = false
+    private var emphasized = true
+    private var hovering = false
 
     init(controller: ShelfController) {
         self.controller = controller
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.cornerRadius = 8
-        layer?.masksToBounds = true
+
+        for view in [plate, labelPill] {
+            view.wantsLayer = true
+            view.layer?.cornerCurve = .continuous
+            view.translatesAutoresizingMaskIntoConstraints = false
+        }
+        plate.layer?.cornerRadius = 10
+        labelPill.layer?.cornerRadius = 5
 
         imageView.imageScaling = .scaleProportionallyUpOrDown
         imageView.translatesAutoresizingMaskIntoConstraints = false
@@ -29,22 +42,36 @@ final class ItemTileView: NSView, NSDraggingSource {
 
         label.font = .systemFont(ofSize: 11)
         label.alignment = .center
-        label.lineBreakMode = .byTruncatingMiddle
+        // Like Finder: wrap onto a second line, then truncate.
+        label.lineBreakMode = .byWordWrapping
         label.maximumNumberOfLines = 2
         label.cell?.truncatesLastVisibleLine = true
+        label.isSelectable = false
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        label.setContentHuggingPriority(.required, for: .horizontal)
 
+        addSubview(plate)
         addSubview(imageView)
+        addSubview(labelPill)
         addSubview(label)
         NSLayoutConstraint.activate([
-            imageView.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            imageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            imageView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            imageView.bottomAnchor.constraint(equalTo: label.topAnchor, constant: -4),
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
-            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
+            plate.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            plate.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            plate.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            // Fixed room for two lines of name keeps thumbnails aligned across a row.
+            plate.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -32),
+            imageView.topAnchor.constraint(equalTo: plate.topAnchor, constant: 5),
+            imageView.leadingAnchor.constraint(equalTo: plate.leadingAnchor, constant: 5),
+            imageView.trailingAnchor.constraint(equalTo: plate.trailingAnchor, constant: -5),
+            imageView.bottomAnchor.constraint(equalTo: plate.bottomAnchor, constant: -5),
+            label.centerXAnchor.constraint(equalTo: centerXAnchor),
+            label.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 8),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
+            label.topAnchor.constraint(equalTo: plate.bottomAnchor, constant: 3),
+            labelPill.topAnchor.constraint(equalTo: label.topAnchor, constant: -1),
+            labelPill.bottomAnchor.constraint(equalTo: label.bottomAnchor, constant: 1),
+            labelPill.leadingAnchor.constraint(equalTo: label.leadingAnchor, constant: -5),
+            labelPill.trailingAnchor.constraint(equalTo: label.trailingAnchor, constant: 5),
         ])
     }
 
@@ -55,13 +82,19 @@ final class ItemTileView: NSView, NSDraggingSource {
 
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
 
-    func configure(item: ShelfItem, selected: Bool) {
+    override func layout() {
+        label.preferredMaxLayoutWidth = max(0, bounds.width - 16)
+        super.layout()
+    }
+
+    func configure(item: ShelfItem, selected: Bool, emphasized: Bool) {
         self.item = item
+        self.selected = selected
+        self.emphasized = emphasized
         label.stringValue = item.name
-        toolTip = item.exists ? item.path : "\(item.path)\n(missing — moved or deleted)"
+        toolTip = item.exists ? item.path : "\(item.path)\n(missing: moved or deleted)"
         alphaValue = item.exists ? 1 : 0.4
-        layer?.backgroundColor = selected ? NSColor.controlAccentColor.withAlphaComponent(0.3).cgColor : NSColor.clear.cgColor
-        label.textColor = selected ? .labelColor : .secondaryLabelColor
+        updateColors()
 
         guard loadedPath != item.path else { return }
         loadedPath = item.path
@@ -73,8 +106,47 @@ final class ItemTileView: NSView, NSDraggingSource {
         }
     }
 
+    private func updateColors() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            let plateAlpha: CGFloat = selected ? 0.11 : hovering ? 0.055 : 0
+            plate.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(plateAlpha).cgColor
+            let pill: NSColor = !selected ? .clear : emphasized ? .selectedContentBackgroundColor : .unemphasizedSelectedContentBackgroundColor
+            labelPill.layer?.backgroundColor = pill.cgColor
+        }
+        label.textColor = selected && emphasized ? .alternateSelectedControlTextColor : .labelColor
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateColors()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) { setHovering(true) }
+    override func mouseExited(with event: NSEvent) { setHovering(false) }
+
+    private func setHovering(_ value: Bool) {
+        guard hovering != value else { return }
+        hovering = value
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.12
+            context.allowsImplicitAnimation = true
+            updateColors()
+        }
+    }
+
     override var mouseDownCanMoveWindow: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// The whole tile takes the click, so the plate's margins never start a window drag.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        frame.contains(point) ? self : nil
+    }
 
     override func mouseDown(with event: NSEvent) {
         guard let item, let controller else { return }
@@ -83,6 +155,7 @@ final class ItemTileView: NSView, NSDraggingSource {
             mouseDownEvent = nil
             return
         }
+        controller.mouseDown(on: item, modifiers: event.modifierFlags)
         mouseDownEvent = event
     }
 
@@ -96,7 +169,7 @@ final class ItemTileView: NSView, NSDraggingSource {
 
     override func mouseUp(with event: NSEvent) {
         if let down = mouseDownEvent, let item {
-            controller?.click(item, modifiers: down.modifierFlags)
+            controller?.mouseUp(on: item, modifiers: down.modifierFlags)
         }
         mouseDownEvent = nil
     }
@@ -133,8 +206,16 @@ final class DragAllView: NSView, NSDraggingSource {
         let side = bounds.height - 4
         for (index, item) in items.prefix(3).enumerated().reversed() {
             let offset = CGFloat(index) * 4
-            let rect = NSRect(x: offset, y: 2 + CGFloat(2 - index) * 1.5, width: side, height: side)
-            Thumbnails.shared.image(for: item.url).draw(in: rect)
+            let slot = NSRect(x: offset, y: 2 + CGFloat(2 - index) * 1.5, width: side, height: side)
+            let image = Thumbnails.shared.image(for: item.url)
+            // Aspect-fit so documents and photos keep their shape in the stack.
+            let scale = min(slot.width / max(image.size.width, 1), slot.height / max(image.size.height, 1))
+            let size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+            let rect = NSRect(x: slot.midX - size.width / 2, y: slot.midY - size.height / 2, width: size.width, height: size.height)
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(roundedRect: rect, xRadius: 2.5, yRadius: 2.5).addClip()
+            image.draw(in: rect)
+            NSGraphicsContext.restoreGraphicsState()
         }
     }
 
@@ -159,12 +240,13 @@ final class DragAllView: NSView, NSDraggingSource {
 struct TileRepresentable: NSViewRepresentable {
     let item: ShelfItem
     let selected: Bool
+    let emphasized: Bool
     let controller: ShelfController
 
     func makeNSView(context: Context) -> ItemTileView { ItemTileView(controller: controller) }
 
     func updateNSView(_ view: ItemTileView, context: Context) {
-        view.configure(item: item, selected: selected)
+        view.configure(item: item, selected: selected, emphasized: emphasized)
     }
 }
 
@@ -193,16 +275,4 @@ struct WindowDragArea: NSViewRepresentable {
 
     func makeNSView(context: Context) -> DragView { DragView() }
     func updateNSView(_ view: DragView, context: Context) {}
-}
-
-struct VisualEffectBackground: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .hudWindow
-        view.blendingMode = .behindWindow
-        view.state = .active
-        return view
-    }
-
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }

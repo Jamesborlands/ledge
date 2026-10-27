@@ -9,18 +9,25 @@ final class ShelfController: NSObject, ObservableObject, NSWindowDelegate {
     let panel: ShelfPanel
 
     @Published var selection: Set<UUID> = []
-    @Published var isDropTarget = false
+    @Published private(set) var isDropTarget = false
     @Published var dropFlash = false
+    /// Finder dims selections in windows that aren't key; the tiles follow this.
+    @Published var isKey = false
+
+    /// Matches the continuous corner radius of Tahoe's floating panels.
+    static let cornerRadius: CGFloat = 20
 
     private let store = ShelfStore.shared
     private var keyMonitor: Any?
     private var draggingIDs: [UUID] = []
     private var previewItems: [ShelfItem] = []
+    private let glass = NSGlassEffectView()
+    private var isClosing = false
 
     init(shelfID: UUID) {
         self.shelfID = shelfID
         panel = ShelfPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 290, height: 236),
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 272),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered, defer: false)
         super.init()
@@ -39,11 +46,16 @@ final class ShelfController: NSObject, ObservableObject, NSWindowDelegate {
         panel.isReleasedWhenClosed = false
         panel.isMovableByWindowBackground = true
         panel.minSize = NSSize(width: 200, height: 170)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
 
         let host = ShelfHostingView(rootView: ShelfView(controller: self))
         host.controller = self
         host.sizingOptions = []
-        panel.contentView = host
+        // The window itself is the glass; everything inside sits on it without its own material.
+        glass.cornerRadius = Self.cornerRadius
+        glass.contentView = host
+        panel.contentView = glass
 
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, event.window === self.panel else { return event }
@@ -68,8 +80,16 @@ final class ShelfController: NSObject, ObservableObject, NSWindowDelegate {
             origin.x = min(max(origin.x, frame.minX + 8), frame.maxX - size.width - 8)
             origin.y = min(max(origin.y, frame.minY + 8), frame.maxY - size.height - 8)
         }
-        panel.setFrameOrigin(origin)
+        // Drop down out of the notch: start a little higher and transparent, then settle.
+        panel.setFrameOrigin(NSPoint(x: origin.x, y: origin.y + 14))
+        panel.alphaValue = 0
         panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.24
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1)
+            panel.animator().setFrameOrigin(origin)
+            panel.animator().alphaValue = 1
+        }
     }
 
     func bringToFront() {
@@ -78,7 +98,25 @@ final class ShelfController: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func close() {
-        panel.close()
+        guard !isClosing else { return }
+        isClosing = true
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.14
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            panel.animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            MainActor.assumeIsolated { self?.panel.close() }
+        }
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) { isKey = true }
+    func windowDidResignKey(_ notification: Notification) { isKey = false }
+
+    /// Tints the glass with the accent color while a drop is hovering, like a Finder drop target.
+    func setDropTarget(_ active: Bool) {
+        guard isDropTarget != active else { return }
+        isDropTarget = active
+        glass.tintColor = active ? NSColor.controlAccentColor.withAlphaComponent(0.22) : nil
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -110,12 +148,18 @@ final class ShelfController: NSObject, ObservableObject, NSWindowDelegate {
 
     // MARK: Selection & keys
 
-    func click(_ item: ShelfItem, modifiers: NSEvent.ModifierFlags) {
+    /// Selects on mouse down like Finder. A plain click on an already selected item waits for
+    /// mouse up, so dragging a multi-selection doesn't collapse it first.
+    func mouseDown(on item: ShelfItem, modifiers: NSEvent.ModifierFlags) {
         if modifiers.contains(.command) || modifiers.contains(.shift) {
             if selection.contains(item.id) { selection.remove(item.id) } else { selection.insert(item.id) }
-        } else {
+        } else if !selection.contains(item.id) {
             selection = [item.id]
         }
+    }
+
+    func mouseUp(on item: ShelfItem, modifiers: NSEvent.ModifierFlags) {
+        if !modifiers.contains(.command), !modifiers.contains(.shift) { selection = [item.id] }
     }
 
     private func handleKey(_ event: NSEvent) -> Bool {
@@ -196,12 +240,15 @@ final class ShelfController: NSObject, ObservableObject, NSWindowDelegate {
         NSPasteboard.general.writeObjects(urls)
     }
 
+    /// Where the header's actions button sits, in the hosting view's (flipped) coordinates.
+    var actionsButtonFrame: NSRect = .zero
+
     func share(_ targets: [ShelfItem]) {
-        guard let view = panel.contentView else { return }
+        guard let view = glass.contentView else { return }
         let urls = targets.filter(\.exists).map(\.url)
         guard !urls.isEmpty else { return }
-        let y = view.isFlipped ? 4 : view.bounds.maxY - 34
-        let anchor = NSRect(x: view.bounds.maxX - 64, y: y, width: 28, height: 28)
+        var anchor = actionsButtonFrame
+        if anchor.isEmpty { anchor = NSRect(x: view.bounds.maxX - 64, y: 6, width: 26, height: 26) }
         NSSharingServicePicker(items: urls).show(relativeTo: anchor, of: view, preferredEdge: .minY)
     }
 
@@ -281,19 +328,71 @@ final class ShelfController: NSObject, ObservableObject, NSWindowDelegate {
         if !selection.contains(item.id) { selection = [item.id] }
         let targets = selectedItems
         let menu = NSMenu()
-        menu.addItem(ClosureMenuItem("Open") { [weak self] in self?.open(targets) })
-        menu.addItem(ClosureMenuItem("Quick Look") { [weak self] in self?.quickLook() })
-        menu.addItem(ClosureMenuItem("Show in Finder") { [weak self] in self?.reveal(targets) })
+        menu.addItem(ClosureMenuItem("Open", symbol: "arrow.up.forward.app") { [weak self] in self?.open(targets) })
+        menu.addItem(ClosureMenuItem("Quick Look", symbol: "eye") { [weak self] in self?.quickLook() })
+        menu.addItem(ClosureMenuItem("Show in Finder", symbol: "folder") { [weak self] in self?.reveal(targets) })
         menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem("Copy") { [weak self] in self?.copy(targets) })
-        menu.addItem(ClosureMenuItem("Share…") { [weak self] in self?.share(targets) })
-        menu.addItem(ClosureMenuItem("Save Copy To…") { [weak self] in self?.saveToFolder(targets) })
-        menu.addItem(ClosureMenuItem("Compress") { [weak self] in self?.compress(targets) })
+        menu.addItem(ClosureMenuItem("Copy", symbol: "doc.on.doc") { [weak self] in self?.copy(targets) })
+        menu.addItem(ClosureMenuItem("Share…", symbol: "square.and.arrow.up") { [weak self] in self?.share(targets) })
+        menu.addItem(ClosureMenuItem("Save Copy To…", symbol: "square.and.arrow.down") { [weak self] in self?.saveToFolder(targets) })
+        menu.addItem(ClosureMenuItem("Compress", symbol: "archivebox") { [weak self] in self?.compress(targets) })
         menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem(targets.count > 1 ? "Remove \(targets.count) Items from Shelf" : "Remove from Shelf") { [weak self] in
-            self?.removeFromShelf(targets)
-        })
+        let remove = targets.count > 1 ? "Remove \(targets.count) Items from Shelf" : "Remove from Shelf"
+        menu.addItem(ClosureMenuItem(remove, symbol: "minus.circle") { [weak self] in self?.removeFromShelf(targets) })
         return menu
+    }
+
+    /// The header's ••• menu. Acts on the selection, or on everything when nothing is selected.
+    func actionsMenu() -> NSMenu {
+        let scope = selection.isEmpty ? "All" : "Selected"
+        let menu = NSMenu()
+        menu.addItem(ClosureMenuItem("Open \(scope)", symbol: "arrow.up.forward.app") { [weak self] in
+            guard let self else { return }
+            self.open(self.targetItems)
+        })
+        menu.addItem(ClosureMenuItem("Quick Look", symbol: "eye") { [weak self] in self?.quickLook() })
+        menu.addItem(ClosureMenuItem("Show in Finder", symbol: "folder") { [weak self] in
+            guard let self else { return }
+            self.reveal(self.targetItems)
+        })
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem("Copy \(scope)", symbol: "doc.on.doc") { [weak self] in
+            guard let self else { return }
+            self.copy(self.targetItems)
+        })
+        menu.addItem(ClosureMenuItem("Share…", symbol: "square.and.arrow.up") { [weak self] in
+            guard let self else { return }
+            self.share(self.targetItems)
+        })
+        menu.addItem(ClosureMenuItem("Save Copies To…", symbol: "square.and.arrow.down") { [weak self] in
+            guard let self else { return }
+            self.saveToFolder(self.targetItems)
+        })
+        menu.addItem(ClosureMenuItem("Compress \(scope) to Zip", symbol: "archivebox") { [weak self] in
+            guard let self else { return }
+            self.compress(self.targetItems)
+        })
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem("Select All", symbol: "checkmark.circle") { [weak self] in
+            guard let self else { return }
+            self.selection = Set(self.items.map(\.id))
+        })
+        if !selection.isEmpty {
+            menu.addItem(ClosureMenuItem("Remove Selected", symbol: "minus.circle") { [weak self] in
+                guard let self else { return }
+                self.removeFromShelf(self.selectedItems)
+            })
+        }
+        menu.addItem(ClosureMenuItem("Clear Shelf", symbol: "trash") { [weak self] in self?.clear() })
+        menu.addItem(ClosureMenuItem("Close Shelf", symbol: "xmark") { [weak self] in self?.close() })
+        return menu
+    }
+
+    func showActionsMenu() {
+        guard let view = glass.contentView else { return }
+        let frame = actionsButtonFrame
+        let point = frame.isEmpty ? NSPoint(x: view.bounds.maxX - 60, y: 34) : NSPoint(x: frame.minX, y: frame.maxY + 6)
+        actionsMenu().popUp(positioning: nil, at: point, in: view)
     }
 
     // MARK: Quick Look
@@ -358,7 +457,7 @@ final class ShelfHostingView: NSHostingView<ShelfView> {
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard let controller, !controller.isOwnDrag(sender) else { return [] }
-        controller.isDropTarget = true
+        controller.setDropTarget(true)
         return .copy
     }
 
@@ -368,29 +467,31 @@ final class ShelfHostingView: NSHostingView<ShelfView> {
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
-        controller?.isDropTarget = false
+        controller?.setDropTarget(false)
     }
 
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { true }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        controller?.isDropTarget = false
+        controller?.setDropTarget(false)
         return controller?.accept(sender.draggingPasteboard) ?? false
     }
 
     override func concludeDragOperation(_ sender: NSDraggingInfo?) {
-        controller?.isDropTarget = false
+        controller?.setDropTarget(false)
     }
 }
 
 final class ClosureMenuItem: NSMenuItem {
     private let handler: () -> Void
 
-    init(_ title: String, key: String = "", modifiers: NSEvent.ModifierFlags = .command, handler: @escaping () -> Void) {
+    init(_ title: String, symbol: String? = nil, key: String = "", modifiers: NSEvent.ModifierFlags = .command,
+         handler: @escaping () -> Void) {
         self.handler = handler
         super.init(title: title, action: #selector(fire), keyEquivalent: key)
         keyEquivalentModifierMask = modifiers
         target = self
+        if let symbol { image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) }
     }
 
     @available(*, unavailable)

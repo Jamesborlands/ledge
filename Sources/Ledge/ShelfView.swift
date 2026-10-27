@@ -7,16 +7,13 @@ struct ShelfView: View {
     private var items: [ShelfItem] { store.shelf(controller.shelfID)?.items ?? [] }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider().opacity(0.5)
-            content
-        }
-        .background(VisualEffectBackground().ignoresSafeArea())
-        .overlay(DropGlow(active: controller.isDropTarget, flash: controller.dropFlash).allowsHitTesting(false))
-        .ignoresSafeArea()
-        .animation(.easeOut(duration: 0.15), value: controller.isDropTarget)
-        .animation(.easeOut(duration: 0.3), value: controller.dropFlash)
+        // The header rides in the safe area so tiles scroll under it with the system's soft edge.
+        content
+            .safeAreaInset(edge: .top, spacing: 0) { header }
+            .overlay(DropHighlight(active: controller.isDropTarget, flash: controller.dropFlash).allowsHitTesting(false))
+            .ignoresSafeArea()
+            .animation(.easeOut(duration: 0.15), value: controller.isDropTarget)
+            .animation(.easeOut(duration: 0.3), value: controller.dropFlash)
     }
 
     private var title: String {
@@ -28,57 +25,25 @@ struct ShelfView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 4) {
             DragAllRepresentable(controller: controller, itemPaths: items.map(\.path))
-                .frame(width: 34, height: 24)
+                .frame(width: 32, height: 24)
+                .padding(.trailing, 2)
             Text(title)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.headline)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .allowsHitTesting(false)
             Spacer(minLength: 4)
-            Menu {
-                actions
-            } label: {
-                Image(systemName: "ellipsis.circle")
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .disabled(items.isEmpty)
-            Button {
-                controller.close()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Close shelf (it stays in Recent Shelves)")
+            HeaderButton(symbol: "ellipsis", help: "More actions") { controller.showActionsMenu() }
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { controller.actionsButtonFrame = $0 }
+                .disabled(items.isEmpty)
+            HeaderButton(symbol: "xmark", help: "Close shelf (it stays in Recent Shelves)") { controller.close() }
         }
-        .padding(.horizontal, 10)
-        .frame(height: 38)
+        .padding(.leading, 12)
+        .padding(.trailing, 8)
+        .frame(height: 42)
         .background(WindowDragArea())
-    }
-
-    @ViewBuilder
-    private var actions: some View {
-        let scope = controller.selection.isEmpty ? "All" : "Selected"
-        Button("Open \(scope)") { controller.open(controller.targetItems) }
-        Button("Quick Look") { controller.quickLook() }
-        Button("Show in Finder") { controller.reveal(controller.targetItems) }
-        Divider()
-        Button("Copy \(scope)") { controller.copy(controller.targetItems) }
-        Button("Share…") { controller.share(controller.targetItems) }
-        Button("Save Copies To…") { controller.saveToFolder(controller.targetItems) }
-        Button("Compress \(scope) to Zip") { controller.compress(controller.targetItems) }
-        Divider()
-        Button("Select All") { controller.selection = Set(items.map(\.id)) }
-        if !controller.selection.isEmpty {
-            Button("Remove Selected") { controller.removeFromShelf(controller.selectedItems) }
-        }
-        Button("Clear Shelf") { controller.clear() }
-        Button("Close Shelf") { controller.close() }
     }
 
     @ViewBuilder
@@ -86,31 +51,35 @@ struct ShelfView: View {
         if items.isEmpty {
             VStack(spacing: 6) {
                 Image(systemName: "tray.and.arrow.down")
-                    .font(.system(size: 26, weight: .light))
-                Text("Drop files here")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 28, weight: .regular))
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 2)
+                Text("Drop Files Here")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
                 Text("or press ⌘V to paste")
-                    .font(.system(size: 11))
+                    .font(.subheadline)
                     .foregroundStyle(.tertiary)
             }
-            .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
-                    .foregroundStyle(.tertiary)
+                RoundedRectangle(cornerRadius: ShelfController.cornerRadius - 8, style: .continuous)
+                    .strokeBorder(.quaternary, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
             )
-            .padding(10)
+            .padding([.horizontal, .bottom], 8)
         } else {
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 84, maximum: 120), spacing: 6)], spacing: 6) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 84, maximum: 120), spacing: 4)], spacing: 4) {
                     ForEach(items) { item in
-                        TileRepresentable(item: item, selected: controller.selection.contains(item.id), controller: controller)
-                            .frame(height: items.count == 1 ? 130 : 96)
+                        TileRepresentable(item: item, selected: controller.selection.contains(item.id),
+                                          emphasized: controller.isKey, controller: controller)
+                            .frame(height: items.count == 1 ? 140 : 108)
                     }
                 }
-                .padding(8)
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
             }
+            .scrollEdgeEffectStyle(.soft, for: .top)
             .background(
                 Color.clear
                     .contentShape(Rectangle())
@@ -120,28 +89,54 @@ struct ShelfView: View {
     }
 }
 
-/// Glowing edge shown while something is held over the shelf, plus a brief flash when it lands.
-struct DropGlow: View {
+/// A borderless symbol button that shows a soft circle on hover, like controls on Tahoe's glass panels.
+struct HeaderButton: View {
+    let symbol: String
+    let help: String
+    let action: () -> Void
+
+    @State private var hovering = false
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
+        }
+        .buttonStyle(HeaderButtonStyle(hovering: hovering && isEnabled))
+        .opacity(isEnabled ? 1 : 0.4)
+        .onHover { hovering = $0 }
+        .help(help)
+    }
+}
+
+private struct HeaderButtonStyle: ButtonStyle {
+    let hovering: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(hovering ? .primary : .secondary)
+            .background(Circle().fill(.primary.opacity(configuration.isPressed ? 0.15 : hovering ? 0.08 : 0)))
+            .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+}
+
+/// Accent ring shown while something is held over the shelf (the glass also takes an accent tint),
+/// plus a brief flash when it lands.
+struct DropHighlight: View {
     let active: Bool
     let flash: Bool
 
-    private let cyan = Color(red: 0.38, green: 0.86, blue: 1.0)
-    private let violet = Color(red: 0.62, green: 0.45, blue: 1.0)
-
     var body: some View {
-        let edge = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        let inset: CGFloat = 3
+        let edge = RoundedRectangle(cornerRadius: ShelfController.cornerRadius - inset, style: .continuous)
         ZStack {
-            edge.fill(LinearGradient(colors: [cyan.opacity(0.16), violet.opacity(0.10)], startPoint: .top, endPoint: .bottom))
-                .opacity(active || flash ? 1 : 0)
-            edge.strokeBorder(LinearGradient(colors: [cyan, violet], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 3)
-                .shadow(color: cyan.opacity(0.9), radius: 5)
-                .shadow(color: violet.opacity(0.7), radius: 12)
-                .padding(3)
+            edge.strokeBorder(Color.accentColor, lineWidth: 2.5)
                 .opacity(active ? 1 : 0)
-                .phaseAnimator([0.65, 1.0]) { view, phase in
-                    view.opacity(active ? phase : 0)
-                } animation: { _ in .easeInOut(duration: 0.7) }
-            edge.fill(cyan.opacity(flash ? 0.28 : 0))
+            edge.fill(Color.accentColor.opacity(flash ? 0.18 : 0))
         }
+        .padding(inset)
     }
 }

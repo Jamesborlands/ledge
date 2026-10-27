@@ -31,8 +31,8 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         menu.removeAllItems()
         let app = AppDelegate.shared!
 
-        menu.addItem(ClosureMenuItem("New Shelf", key: "d", modifiers: [.option, .shift]) { app.newShelf() })
-        menu.addItem(ClosureMenuItem("New Shelf from Clipboard", key: "v", modifiers: [.option, .shift]) { app.newShelfFromClipboard() })
+        menu.addItem(ClosureMenuItem("New Shelf", symbol: "tray.and.arrow.down", key: "d", modifiers: [.option, .shift]) { app.newShelf() })
+        menu.addItem(ClosureMenuItem("New Shelf from Clipboard", symbol: "doc.on.clipboard", key: "v", modifiers: [.option, .shift]) { app.newShelfFromClipboard() })
         menu.addItem(.separator())
 
         let history = ShelfStore.shared.history
@@ -46,33 +46,31 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         }
 
         let all = NSMenuItem(title: "All Shelves", action: nil, keyEquivalent: "")
+        all.image = NSImage(systemSymbolName: "square.stack", accessibilityDescription: nil)
         let allMenu = NSMenu()
         for shelf in history { allMenu.addItem(shelfMenuItem(shelf)) }
         allMenu.addItem(.separator())
-        allMenu.addItem(ClosureMenuItem("Clear History…") { [weak self] in self?.confirmClearHistory() })
+        allMenu.addItem(ClosureMenuItem("Clear History…", symbol: "trash") { [weak self] in self?.confirmClearHistory() })
         all.submenu = allMenu
         all.isEnabled = !history.isEmpty
         menu.addItem(all)
 
         menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem("Settings…", key: ",") { app.showSettings() })
-        menu.addItem(ClosureMenuItem("About Ledge") { app.showAbout() })
+        menu.addItem(ClosureMenuItem("Settings…", symbol: "gearshape", key: ",") { app.showSettings() })
+        menu.addItem(ClosureMenuItem("About Ledge", symbol: "info.circle") { app.showAbout() })
         menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem("Quit Ledge", key: "q") { NSApp.terminate(nil) })
+        menu.addItem(ClosureMenuItem("Quit Ledge", symbol: "power", key: "q") { NSApp.terminate(nil) })
     }
 
     private func shelfMenuItem(_ shelf: Shelf) -> NSMenuItem {
         let id = shelf.id
         let item = ClosureMenuItem(shelf.menuTitle) { AppDelegate.shared.openShelf(id) }
-        let title = NSMutableAttributedString(string: shelf.menuTitle + "\n", attributes: [.font: NSFont.menuFont(ofSize: 0)])
-        title.append(NSAttributedString(string: dateFormatter.string(from: shelf.updatedAt), attributes: [
-            .font: NSFont.menuFont(ofSize: 11),
-            .foregroundColor: NSColor.secondaryLabelColor,
-        ]))
-        item.attributedTitle = title
+        item.subtitle = dateFormatter.string(from: shelf.updatedAt)
         if let first = shelf.items.first, let icon = Thumbnails.shared.image(for: first.url).copy() as? NSImage {
             icon.size = NSSize(width: 28, height: 28)
             item.image = icon
+        } else {
+            item.image = NSImage(systemSymbolName: "tray", accessibilityDescription: nil)
         }
         return item
     }

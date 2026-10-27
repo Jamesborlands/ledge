@@ -4,7 +4,7 @@ set -euo pipefail
 cd "${0:A:h}"
 
 mkdir -p build
-swiftc -O -swift-version 5 -target arm64-apple-macosx14.0 -sdk "$(xcrun --show-sdk-path)" \
+swiftc -O -swift-version 5 -target arm64-apple-macosx26.0 -sdk "$(xcrun --show-sdk-path)" \
   Sources/Ledge/*.swift -o build/Ledge
 
 if [[ ! -f Resources/AppIcon.icns ]]; then

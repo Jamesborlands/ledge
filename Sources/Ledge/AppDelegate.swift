@@ -109,9 +109,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// `Ledge --shelf <file>... [--snapshot out.png]` opens a shelf holding those files (used for testing);
-    /// `--settings-snapshot out.png` renders the Settings window. Launch these with `open` (see scripts/snapshots.sh).
+    /// `--select` selects its first item; `--settings-snapshot out.png` renders the Settings window;
+    /// `--appearance light|dark` forces one. Launch these with `open` (see scripts/snapshots.sh).
     private func handleTestArguments() {
         let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--appearance"), i + 1 < args.count {
+            NSApp.appearance = NSAppearance(named: args[i + 1] == "light" ? .aqua : .darkAqua)
+        }
         if args.contains("--clipboard") { newShelfFromClipboard() }
         if let i = args.firstIndex(of: "--settings-snapshot"), i + 1 < args.count {
             showSettings()
@@ -133,18 +137,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let paths = args[(index + 1)...].prefix { !$0.hasPrefix("--") }
         let controller = newShelf()
         ShelfStore.shared.add(paths.map { ShelfItem(url: URL(fileURLWithPath: $0), owned: false) }, to: controller.shelfID)
-        if args.contains("--drop-target") { controller.isDropTarget = true }
+        if args.contains("--drop-target") { controller.setDropTarget(true) }
+        if args.contains("--select"), let first = controller.items.first {
+            controller.selection = [first.id]
+            controller.bringToFront()
+        }
         if let snap = args.firstIndex(of: "--snapshot"), snap + 1 < args.count {
             let out = URL(fileURLWithPath: args[snap + 1])
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                guard let view = controller.panel.contentView,
-                      let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
-                view.cacheDisplay(in: view.bounds, to: rep)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                // Glass is composited by the window server, which a capture can't see behind, so lift the
+                // shelf's content off it and capture just that. The PNG is composited onto a backdrop later.
+                if let glass = controller.panel.contentView as? NSGlassEffectView, let host = glass.contentView {
+                    glass.contentView = nil
+                    controller.panel.contentView = host
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
                 print("shelf frame:", controller.panel.frame)
                 fflush(stdout)
-                try? rep.representation(using: .png, properties: [:])?.write(to: out)
+                Self.capture(controller.panel, to: out)
             }
         }
+    }
+
+    /// Captures one of our own windows as the window server draws it (no Screen Recording permission
+    /// needed for your own windows). CGWindowListCreateImage is gone from the SDK headers but still
+    /// works for this; cacheDisplay misses SwiftUI scroll content on macOS 26.
+    private static func capture(_ window: NSWindow, to url: URL) {
+        typealias Create = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+        guard let symbol = dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage") else { return }
+        let create = unsafeBitCast(symbol, to: Create.self)
+        // including window, bounds ignore framing | best resolution
+        guard let image = create(.null, 1 << 3, UInt32(window.windowNumber), 1 | 8)?.takeRetainedValue() else { return }
+        try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?.write(to: url)
     }
 
     private static func snapshot(after delay: TimeInterval, _ view: NSView?, to url: URL, keepAlive: @escaping () -> Void) {
