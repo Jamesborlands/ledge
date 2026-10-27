@@ -208,6 +208,9 @@ final class DragAllView: NSView, NSDraggingSource {
             let offset = CGFloat(index) * 4
             let slot = NSRect(x: offset, y: 2 + CGFloat(2 - index) * 1.5, width: side, height: side)
             let image = Thumbnails.shared.image(for: item.url)
+            if !Thumbnails.shared.hasPreview(for: item.url) {
+                Thumbnails.shared.load(item.url) { [weak self] _ in self?.needsDisplay = true }
+            }
             // Aspect-fit so documents and photos keep their shape in the stack.
             let scale = min(slot.width / max(image.size.width, 1), slot.height / max(image.size.height, 1))
             let size = NSSize(width: image.size.width * scale, height: image.size.height * scale)

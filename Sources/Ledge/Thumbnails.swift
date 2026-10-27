@@ -12,6 +12,8 @@ final class Thumbnails {
         cache.object(forKey: url.path as NSString) ?? NSWorkspace.shared.icon(forFile: url.path)
     }
 
+    func hasPreview(for url: URL) -> Bool { cache.object(forKey: url.path as NSString) != nil }
+
     /// Generates a real preview (photos, PDFs, documents) and calls back on the main thread.
     func load(_ url: URL, completion: @escaping (NSImage) -> Void) {
         let path = url.path

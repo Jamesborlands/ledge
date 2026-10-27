@@ -2,7 +2,7 @@
 
 <p align="center">A floating file shelf that lives at the top of your Mac's screen.</p>
 
-<p align="center"><img src="docs/hero.png" width="760" alt="A Ledge shelf open under a glowing MacBook notch, holding a PDF, photos and a screenshot"></p>
+<p align="center"><img src="docs/hero.png" width="760" alt="A Liquid Glass Ledge shelf open under a glowing MacBook notch, holding a PDF, a text file and two photos, with the PDF selected"></p>
 
 Drag a file up to the notch and a shelf drops down to catch it. Park files there while you
 move between apps, then drag them out wherever they need to go. Ledge lives in the menu bar,
@@ -23,7 +23,7 @@ has no account and doesn't copy your files: it keeps track of them where they al
 - **Move everything at once.** Drag the icon stack in the top-left corner of a shelf to drop
   all of its files somewhere else.
 
-<p align="center"><img src="docs/drop.png" width="400" alt="A shelf glowing while a file is held over it"></p>
+<p align="center"><img src="docs/drop.png" width="400" alt="A glass shelf holding a PDF and a text file, tinted and ringed in the accent color while a file is held over it"></p>
 
 The shelf lights up in your accent color while you hold a file over it, so you know the drop will land.
 
@@ -32,7 +32,7 @@ The shelf lights up in your accent color while you hold a file over it, so you k
 Turn on shake-to-open (shake the mouse while dragging), have items leave the shelf once you
 drag them out, choose how many shelves history keeps, and decide whether Ledge opens at login.
 
-<p align="center"><img src="docs/settings.png" width="460" alt="Ledge settings"></p>
+<p align="center"><img src="docs/settings.png" width="460" alt="The Ledge Settings window in dark mode"></p>
 
 On a Mac without a notch, the shelf opens from the top center of the screen instead.
 
@@ -80,7 +80,7 @@ the Command Line Tools.
 | `Sources/Ledge/StatusMenu.swift` | The menu bar menu |
 | `scripts/make_icon.swift` | Draws the app icon |
 
-`scripts/snapshots.sh` renders the raw screenshots for this README. Launch Ledge with `open`
+`scripts/snapshots.sh --docs <demo files>` takes the screenshots for this README from the live app, over a plain backdrop so nothing personal is in frame (your terminal needs Screen Recording). Launch Ledge with `open`
 (or from Finder) rather than running `build/Ledge.app/Contents/MacOS/Ledge` in a terminal:
 macOS otherwise files Ledge's menu bar icon under your terminal app and hides it whenever
 that app is switched off in System Settings > Menu Bar.

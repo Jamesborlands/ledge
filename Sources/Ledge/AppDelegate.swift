@@ -108,18 +108,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
     }
 
-    /// `Ledge --shelf <file>... [--snapshot out.png]` opens a shelf holding those files (used for testing);
-    /// `--select` selects its first item; `--settings-snapshot out.png` renders the Settings window;
-    /// `--appearance light|dark` forces one. Launch these with `open` (see scripts/snapshots.sh).
+    /// Test flags (launch with `open`, see scripts/snapshots.sh): `--shelf <file>...` opens a shelf holding
+    /// those files, `--select` selects its first item, `--drop-target` shows the drop highlight, `--settings`
+    /// opens Settings, `--appearance light|dark` forces one. `--stage` puts a plain backdrop behind everything
+    /// (so screenshots show nothing personal), `--glow` holds the notch glow, and `--rect-out file` writes the
+    /// rect to screenshot as `x,y,w,h` for `screencapture -R`. `--settings-snapshot`/`--glow-snapshot out.png`
+    /// render those views straight to a PNG.
     private func handleTestArguments() {
         let args = CommandLine.arguments
-        if let i = args.firstIndex(of: "--appearance"), i + 1 < args.count {
-            NSApp.appearance = NSAppearance(named: args[i + 1] == "light" ? .aqua : .darkAqua)
+        func value(_ flag: String) -> String? {
+            guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
+            return args[i + 1]
         }
+        if let look = value("--appearance") {
+            NSApp.appearance = NSAppearance(named: look == "light" ? .aqua : .darkAqua)
+        }
+        let staged = args.contains("--stage")
+        if staged { showStage() }
         if args.contains("--clipboard") { newShelfFromClipboard() }
-        if let i = args.firstIndex(of: "--settings-snapshot"), i + 1 < args.count {
+        if args.contains("--settings") || value("--settings-snapshot") != nil {
             showSettings()
-            Self.snapshot(after: 1.5, settingsWindow?.contentView, to: URL(fileURLWithPath: args[i + 1])) {}
+            if staged, let window = settingsWindow, let screen = stageWindow?.screen {
+                window.level = .statusBar + 2
+                window.setFrameOrigin(NSPoint(x: screen.frame.midX - window.frame.width / 2,
+                                              y: screen.visibleFrame.midY - window.frame.height / 2))
+            }
+        }
+        if let out = value("--settings-snapshot") {
+            Self.snapshot(after: 1.5, settingsWindow?.contentView, to: URL(fileURLWithPath: out)) {}
         }
         if let i = args.firstIndex(of: "--glow-snapshot"), i + 1 < args.count, let screen = ShakeDetector.notchScreen {
             let glow = NotchGlow()
@@ -127,49 +143,84 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if args.contains("--flare") { glow.flare() }
             Self.snapshot(after: 1.2, glow.contentView, to: URL(fileURLWithPath: args[i + 1])) { _ = glow }
         }
+        if args.contains("--glow"), let screen = ShakeDetector.notchScreen {
+            let glow = NotchGlow()
+            glow.update(proximity: 1, zone: ShakeDetector.notchZone(on: screen))
+            glow.flare()
+            heldGlow = glow
+        }
         if args.contains("--print-notch") {
             let screen = NSScreen.screens[0]
             print("notch zone:", ShakeDetector.notchZone(at: NSPoint(x: screen.frame.midX, y: screen.frame.maxY - 1)) ?? .zero,
                   "screen:", screen.frame, "left:", screen.auxiliaryTopLeftArea ?? .zero, "right:", screen.auxiliaryTopRightArea ?? .zero)
             fflush(stdout)
         }
-        guard let index = args.firstIndex(of: "--shelf") else { return }
-        let paths = args[(index + 1)...].prefix { !$0.hasPrefix("--") }
-        let controller = newShelf()
-        ShelfStore.shared.add(paths.map { ShelfItem(url: URL(fileURLWithPath: $0), owned: false) }, to: controller.shelfID)
-        if args.contains("--drop-target") { controller.setDropTarget(true) }
-        if args.contains("--select"), let first = controller.items.first {
-            controller.selection = [first.id]
-            controller.bringToFront()
-        }
-        if let snap = args.firstIndex(of: "--snapshot"), snap + 1 < args.count {
-            let out = URL(fileURLWithPath: args[snap + 1])
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                // Glass is composited by the window server, which a capture can't see behind, so lift the
-                // shelf's content off it and capture just that. The PNG is composited onto a backdrop later.
-                if let glass = controller.panel.contentView as? NSGlassEffectView, let host = glass.contentView {
-                    glass.contentView = nil
-                    controller.panel.contentView = host
+        var shelf: ShelfController?
+        if let index = args.firstIndex(of: "--shelf") {
+            let paths = args[(index + 1)...].prefix { !$0.hasPrefix("--") }
+            let controller = newShelf()
+            ShelfStore.shared.add(paths.map { ShelfItem(url: URL(fileURLWithPath: $0), owned: false) }, to: controller.shelfID)
+            if staged {
+                // Sit lower than usual so the glow under the notch stays in frame.
+                controller.panel.level = .statusBar + 2
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    let origin = controller.panel.frame.origin
+                    controller.panel.setFrameOrigin(NSPoint(x: origin.x, y: origin.y - 90))
                 }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
-                print("shelf frame:", controller.panel.frame)
-                fflush(stdout)
-                Self.capture(controller.panel, to: out)
+            if args.contains("--drop-target") { controller.setDropTarget(true) }
+            if args.contains("--select"), let first = controller.items.first {
+                controller.selection = [first.id]
+                controller.bringToFront()
+            }
+            shelf = controller
+        }
+        if let out = value("--rect-out") {
+            // After the shelf has settled, write the area worth capturing.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self, let rect = self.captureRect(shelf: shelf) else { return }
+                let top = NSScreen.screens[0].frame.maxY - rect.maxY
+                let text = [rect.minX, top, rect.width, rect.height].map { String(Int($0.rounded())) }.joined(separator: ",")
+                try? text.write(toFile: out, atomically: true, encoding: .utf8)
             }
         }
     }
 
-    /// Captures one of our own windows as the window server draws it (no Screen Recording permission
-    /// needed for your own windows). CGWindowListCreateImage is gone from the SDK headers but still
-    /// works for this; cacheDisplay misses SwiftUI scroll content on macOS 26.
-    private static func capture(_ window: NSWindow, to url: URL) {
-        typealias Create = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
-        guard let symbol = dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage") else { return }
-        let create = unsafeBitCast(symbol, to: Create.self)
-        // including window, bounds ignore framing | best resolution
-        guard let image = create(.null, 1 << 3, UInt32(window.windowNumber), 1 | 8)?.takeRetainedValue() else { return }
-        try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?.write(to: url)
+    private var stageWindow: NSWindow?
+    private var heldGlow: NotchGlow?
+
+    /// A plain backdrop over the notch screen, menu bar included, so screenshots show only Ledge.
+    private func showStage() {
+        guard let screen = ShakeDetector.notchScreen ?? NSScreen.main else { return }
+        let menuBar = max(screen.frame.maxY - screen.visibleFrame.maxY, screen.safeAreaInsets.top)
+        let window = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.level = .statusBar
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        window.ignoresMouseEvents = true
+        window.contentView = NSHostingView(rootView: StageBackdrop(menuBarHeight: menuBar))
+        window.setFrame(screen.frame, display: true)
+        window.orderFrontRegardless()
+        stageWindow = window
+    }
+
+    /// The hero framing (notch plus shelf) when the glow is up, else the shelf or Settings with room for the shadow.
+    private func captureRect(shelf: ShelfController?) -> NSRect? {
+        let margin: CGFloat = 56
+        let rect: NSRect?
+        if let shelf {
+            let frame = shelf.panel.frame
+            if heldGlow != nil, let screen = ShakeDetector.notchScreen {
+                let midX = ShakeDetector.notchZone(on: screen).midX
+                rect = NSRect(x: midX - 450, y: frame.minY - margin, width: 900, height: screen.frame.maxY - frame.minY + margin)
+            } else {
+                rect = frame.insetBy(dx: -margin, dy: -margin)
+            }
+        } else {
+            rect = settingsWindow?.frame.insetBy(dx: -margin, dy: -margin)
+        }
+        // Never reach past the backdrop.
+        guard let rect, let stage = stageWindow?.frame else { return rect }
+        return rect.intersection(stage)
     }
 
     private static func snapshot(after delay: TimeInterval, _ view: NSView?, to url: URL, keepAlive: @escaping () -> Void) {
@@ -179,5 +230,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             view.cacheDisplay(in: view.bounds, to: rep)
             try? rep.representation(using: .png, properties: [:])?.write(to: url)
         }
+    }
+}
+
+/// Backdrop for screenshots: a dark wallpaper-like gradient (light in light mode) under a menu bar strip.
+struct StageBackdrop: View {
+    let menuBarHeight: CGFloat
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let dark = scheme == .dark
+        ZStack(alignment: .top) {
+            LinearGradient(colors: dark ? [Color(red: 0.09, green: 0.08, blue: 0.2), Color(red: 0.13, green: 0.23, blue: 0.42)]
+                                        : [Color(red: 0.92, green: 0.88, blue: 0.96), Color(red: 0.76, green: 0.84, blue: 0.94)],
+                           startPoint: .top, endPoint: .bottom)
+            GeometryReader { proxy in
+                let size = proxy.size
+                ZStack {
+                    Circle().fill(dark ? Color(red: 0.47, green: 0.27, blue: 0.78) : Color(red: 1, green: 0.6, blue: 0.5))
+                        .frame(width: size.width * 0.35).position(x: size.width * 0.36, y: size.height * 0.62)
+                    Circle().fill(dark ? Color(red: 0.16, green: 0.55, blue: 0.86) : Color(red: 0.47, green: 0.74, blue: 1))
+                        .frame(width: size.width * 0.3).position(x: size.width * 0.66, y: size.height * 0.3)
+                }
+                .blur(radius: 120)
+                .opacity(0.7)
+            }
+            Rectangle().fill(dark ? Color(white: 0.05) : Color(white: 0.93)).frame(height: menuBarHeight)
+        }
+        .ignoresSafeArea()
     }
 }
